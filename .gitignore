@@ -1,0 +1,8 @@
+bin
+terraform.tf*
+.e
+roles
+ssh-config
+vars.yml
+destroy.tfplan
+

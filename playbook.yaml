@@ -1,0 +1,58 @@
+- hosts: all
+  sudo: true
+  roles:
+    - role: tmtk75.dnsmasq
+    - { role: tmtk75.serf, consul_enabled: true }
+  tasks:
+    - command: yum-config-manager --enable epel
+    - template: src=templates/etc/serf.conf dest=/etc/serf.conf
+    - service: name=serf state=started
+
+- hosts: jump
+  sudo: true
+  roles:
+    - { role: tmtk75.consul, bootstrap: true, server: true }
+  tasks:
+    - template: src=templates/etc/consul.d/ping.json dest=/etc/consul.d/ping.json
+
+- hosts: elasticsearch
+  sudo: true
+  roles:
+    - { role: tmtk75.elasticsearch, consul_enabled: true }
+  tasks:
+  #  - command: /usr/share/elasticsearch/bin/plugin -install mobz/elasticsearch-head
+    - template: src=templates/etc/consul.d/elasticsearch.json dest=/etc/consul.d/elasticsearch.json
+    - template: src=templates/etc/elasticsearch/elasticsearch.yml dest=/etc/elasticsearch/elasticsearch.yml
+    - service: name=elasticsearch state=restarted
+
+- hosts: fluentd
+  sudo: true
+  roles:
+    - role: tmtk75.td-agent
+  tasks:
+    - yum: name={{ item }}
+      with_items:
+        - gcc-c++
+        - curl-devel
+        - ruby-devel
+    - command: /usr/lib64/fluent/ruby/bin/gem install fluent-plugin-elasticsearch
+    - template: src=templates/etc/td-agent/td-agent.conf dest=/etc/td-agent/td-agent.conf
+    - service: name=td-agent state=restarted
+
+- hosts:
+    - elasticsearch
+    - fluentd
+  sudo: true
+  vars_files:
+    - vars.yml
+  roles:
+    - role: tmtk75.consul
+  tasks:
+    - template: src=templates/etc/consul.d/ping.json dest=/etc/consul.d/ping.json
+    - command: /usr/local/bin/consul join {{ private_dns.jump[0] }}
+
+- hosts: all
+  sudo: true
+  tasks:
+    - command: /usr/local/bin/serf join serf.service.consul
+
