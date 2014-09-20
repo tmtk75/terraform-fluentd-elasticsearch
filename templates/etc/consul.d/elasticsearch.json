@@ -1,0 +1,11 @@
+{
+  "service": {
+    "name": "elasticsearch",
+    "tags": ["{{ service_id }}"],
+    "port": 9200,
+    "check": {
+      "script": "curl localhost:9200 >/dev/null 2>&1",
+      "interval": "3s"
+    }
+  }
+}

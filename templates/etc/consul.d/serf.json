@@ -1,0 +1,11 @@
+{
+  "service": {
+    "name": "serf",
+    "tags": ["serf"],
+    "port": 7373,
+    "check": {
+      "script": "/home/tomotaka.sakuma/serf info >/dev/null 2>&1",
+      "interval": "3s"
+    }
+  }
+}
