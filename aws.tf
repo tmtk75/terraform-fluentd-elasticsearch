@@ -2,8 +2,12 @@ variable "aws_access_key" {}
 variable "aws_secret_key" {}
 variable "key_name" {}
 variable "aws_region" {}
-variable "cidr" {
+variable "cidr_vpc" {
     default = "192.168.11.0/24"
+}
+variable "cidr_home" {}
+variable "ami" {
+    default = "ami-c6daff94"
 }
 
 provider "aws" {
@@ -12,61 +16,30 @@ provider "aws" {
     region = "${var.aws_region}"
 }
 
-resource "aws_vpc" "my-vpc" {
-    cidr_block = "${var.cidr}"
-    enable_dns_support = true
-    enable_dns_hostnames = true
+module "vpc" {
+    source = "github.com/tmtk75/terraform-modules//aws/vpc"
+    cidr = "${var.cidr_vpc}"
+    aws_region = "${var.aws_region}"
 }
 
-output "vpc_id" {
-    value = "${aws_vpc.my-vpc.id}"
-}
-
-resource "aws_subnet" "main" {
-    vpc_id = "${aws_vpc.my-vpc.id}"
-    cidr_block = "${var.cidr}"
-    availability_zone = "${var.aws_region}c"
-}
-
-resource "aws_internet_gateway" "gw" {
-    vpc_id = "${aws_vpc.my-vpc.id}"
-}
-
-resource "aws_route_table" "igw" {
-    vpc_id = "${aws_vpc.my-vpc.id}"
-    route {
-        gateway_id = "${aws_internet_gateway.gw.id}"
-        cidr_block = "0.0.0.0/0"
-    }
-}
-
-resource "aws_route_table_association" "main_and_igw" {
-    subnet_id = "${aws_subnet.main.id}"
-    route_table_id = "${aws_route_table.igw.id}"
-}
-
-#
-# Handling security groups by terraform is buggy yet
-# It doesn't work properly for multiple security groups as my expectation
-#
-resource "aws_security_group" "allow_all" {
-    vpc_id = "${aws_vpc.my-vpc.id}"
-    name = "allow_all"
-    description = "Allow all inbound traffic"
+resource "aws_security_group" "allow_all_from_home" {
+    vpc_id = "${module.vpc.vpc_id}"
+    name = "allow_all_from_home"
+    description = "Allow all inbound traffic from home"
     ingress {
         from_port = 0
         to_port = 65535
         protocol = "tcp"
-        cidr_blocks = ["0.0.0.0/0"]
+        cidr_blocks = ["${var.cidr_home}"]
     }
 }
 
 resource "aws_instance" "jump" {
-    ami = "ami-29dc9228"
+    ami = "${var.ami}"
     instance_type = "t2.micro"
-    subnet_id = "${aws_subnet.main.id}"
+    subnet_id = "${module.vpc.subnet_id}"
     key_name = "${var.key_name}"
-    security_groups = ["${aws_security_group.allow_all.id}"]
+    security_groups = ["${aws_security_group.allow_all_from_home.id}"]
     count = 1
 }
 
@@ -84,11 +57,11 @@ output "public_ip.jump" {
 }
 
 resource "aws_instance" "fluentd" {
-    ami = "ami-29dc9228"
+    ami = "${var.ami}"
     instance_type = "t2.micro"
-    subnet_id = "${aws_subnet.main.id}"
+    subnet_id = "${module.vpc.subnet_id}"
     key_name = "${var.key_name}"
-    security_groups = ["${aws_security_group.allow_all.id}"]
+    security_groups = ["${aws_security_group.allow_all_from_home.id}"]
     count = 1
 }
 
@@ -102,48 +75,56 @@ output "public_ip.fluentd" {
 }
 
 output "private_dns.fluentd" {
-    value = "${aws_instance.fluentd.*.private_dns}"
+    value = ["${aws_instance.fluentd.*.private_dns}"]
 }
 
 resource "aws_instance" "elasticsearch" {
-    ami = "ami-29dc9228"
+    ami = "${var.ami}"
     instance_type = "t2.micro"
-    subnet_id = "${aws_subnet.main.id}"
+    subnet_id = "${module.vpc.subnet_id}"
     key_name = "${var.key_name}"
-    security_groups = ["${aws_security_group.allow_all.id}"]
+    security_groups = ["${aws_security_group.allow_all_from_home.id}"]
     count = 2
 }
 
 output "private_dns.elasticsearch" {
-    value = "${aws_instance.elasticsearch.*.private_dns}"
+    value = ["${aws_instance.elasticsearch.*.private_dns}"]
 }
 
-resource "aws_eip" "elasticsearch.0" {
+resource "aws_eip" "elasticsearch_0" {
     instance = "${aws_instance.elasticsearch.0.id}"
     vpc = true
 }
 
-resource "aws_eip" "elasticsearch.1" {
+resource "aws_eip" "elasticsearch_1" {
     instance = "${aws_instance.elasticsearch.1.id}"
     vpc = true
 }
 
 output "public_ip.elasticsearch" {
-    value = "${aws_instance.elasticsearch.*.public_ip}"
+    value = ["${aws_instance.elasticsearch.*.public_ip}"]
 }
 
-#
-# aws_elb doesn't support VPC yet...?
-#
-#resource "aws_elb" "elasticsearch" {
-#  name = "elb-elasticsearch"
-#  availability_zones = ["${aws_instance.elasticsearch.*.availability_zone}"]
-#  listener {
-#    instance_port = 9200
-#    instance_protocol = "http"
-#    lb_port = 9200
-#    lb_protocol = "http"
-#  }
-#  instances = ["${aws_instance.elasticsearch.*.id}"]
-#}
+resource "aws_elb" "elasticsearch" {
+    name = "elb-elasticsearch"
+    #availability_zones = ["${var.aws_region}a"]
+    subnets = ["${module.vpc.subnet_id}"]
+    security_groups = ["${aws_security_group.allow_all_from_home.id}"]
+    instances = ["${aws_instance.elasticsearch.*.id}"]
+    
+    listener {
+        instance_port = 9200
+        instance_protocol = "http"
+        lb_port = 9200
+        lb_protocol = "http"
+    }
+    
+    health_check {
+        healthy_threshold = 2
+        unhealthy_threshold = 2
+        timeout = 5
+        target = "HTTP:9200/"
+        interval = 10
+    }
+}
 
